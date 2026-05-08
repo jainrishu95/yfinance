@@ -5,15 +5,18 @@ WORKDIR /app
 # Install uv for fast dependency management
 RUN pip install uv --no-cache-dir
 
-# Copy project files
-COPY pyproject.toml .
+# Copy server
 COPY server.py .
 
-# Create venv and install dependencies
+# Create venv and install dependencies directly
 RUN uv venv .venv
 ENV VIRTUAL_ENV=/app/.venv
 ENV PATH="/app/.venv/bin:$PATH"
-RUN uv pip install . --no-cache
+RUN uv pip install --no-cache \
+    "mcp[cli]>=1.9.0" \
+    "yfinance>=0.2.40" \
+    "pandas>=2.0.0" \
+    "uvicorn[standard]>=0.30.0"
 
 # Default port (can be overridden by cloud platform)
 ENV PORT=8000
