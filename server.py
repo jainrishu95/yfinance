@@ -741,8 +741,16 @@ def get_market_movers(category: str = "gainers") -> dict:
         if not key:
             return {"error": "category must be 'gainers', 'losers', or 'active'"}
 
-        from yfinance import Screener
-        screener = Screener()
+        # yfinance v1.x moved Screener — try both import paths
+        try:
+            screener = yf.Screener()
+        except AttributeError:
+            try:
+                from yfinance.screener.screener import Screener
+            except ImportError:
+                from yfinance import Screener
+            screener = Screener()
+
         screener.set_predefined_body(key)
         response = screener.response
         quotes = response.get("quotes", [])
@@ -888,10 +896,13 @@ def get_insider_trades(ticker: str) -> dict:
             for f in list(items)[:15]:
                 trades.append({
                     "filed": str(getattr(f, "filing_date", "") or getattr(f, "date", "")),
-                    "filer": (getattr(f, "entity_name", None) or
-                              getattr(f, "company_name", None) or
-                              getattr(f, "name", None) or
-                              getattr(f, "filerName", None)),
+                    "filer": (
+                        getattr(getattr(f, "entity", None), "name", None) or
+                        getattr(f, "entity_name", None) or
+                        getattr(f, "company_name", None) or
+                        getattr(f, "reporting_owner", None) or
+                        getattr(f, "name", None)
+                    ),
                     "form": getattr(f, "form", "4"),
                     "description": getattr(f, "description", None),
                     "url": getattr(f, "filing_index", None) or getattr(f, "document_url", None) or getattr(f, "url", None),
