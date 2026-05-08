@@ -462,6 +462,244 @@ def search_ticker(query: str) -> dict:
 
 
 # ──────────────────────────────────────────────
+# TOOL 11: Technical Indicator Signals
+# ──────────────────────────────────────────────
+@mcp.tool()
+def get_technical_signals(ticker: str) -> dict:
+    """
+    Compute RSI, MACD, and Bollinger Band signals from recent price history.
+    Returns current indicator values and buy/sell/neutral interpretations.
+    """
+    try:
+        import numpy as np
+
+        stock = yf.Ticker(ticker.upper())
+        hist = stock.history(period="6mo", interval="1d")
+
+        if hist.empty or len(hist) < 26:
+            return {"error": "Not enough historical data to compute indicators."}
+
+        close = hist["Close"]
+
+        # RSI (14-day)
+        delta = close.diff()
+        gain = delta.where(delta > 0, 0).rolling(14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs))
+        rsi_val = round(float(rsi.iloc[-1]), 2)
+        rsi_signal = "overbought" if rsi_val > 70 else "oversold" if rsi_val < 30 else "neutral"
+
+        # MACD (12, 26, 9)
+        ema12 = close.ewm(span=12, adjust=False).mean()
+        ema26 = close.ewm(span=26, adjust=False).mean()
+        macd_line = ema12 - ema26
+        signal_line = macd_line.ewm(span=9, adjust=False).mean()
+        histogram = macd_line - signal_line
+        macd_direction = "bullish" if float(histogram.iloc[-1]) > 0 else "bearish"
+
+        # Bollinger Bands (20-day, 2 std)
+        sma20 = close.rolling(20).mean()
+        std20 = close.rolling(20).std()
+        upper = sma20 + 2 * std20
+        lower = sma20 - 2 * std20
+        current_price = float(close.iloc[-1])
+        bb_range = float(upper.iloc[-1]) - float(lower.iloc[-1])
+        bb_position = (current_price - float(lower.iloc[-1])) / bb_range if bb_range > 0 else 0.5
+        bb_signal = "overbought" if bb_position > 0.8 else "oversold" if bb_position < 0.2 else "neutral"
+
+        return {
+            "ticker": ticker.upper(),
+            "price": round(current_price, 2),
+            "rsi": {
+                "value": rsi_val,
+                "signal": rsi_signal,
+                "interpretation": ">70 overbought, <30 oversold",
+            },
+            "macd": {
+                "macd_line": round(float(macd_line.iloc[-1]), 4),
+                "signal_line": round(float(signal_line.iloc[-1]), 4),
+                "histogram": round(float(histogram.iloc[-1]), 4),
+                "direction": macd_direction,
+            },
+            "bollinger_bands": {
+                "upper": round(float(upper.iloc[-1]), 2),
+                "middle": round(float(sma20.iloc[-1]), 2),
+                "lower": round(float(lower.iloc[-1]), 2),
+                "position_pct": round(bb_position * 100, 1),
+                "signal": bb_signal,
+            },
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ──────────────────────────────────────────────
+# TOOL 12: Linear Trend Extrapolation
+# ──────────────────────────────────────────────
+@mcp.tool()
+def get_price_trend_forecast(
+    ticker: str,
+    days_back: int = 30,
+) -> dict:
+    """
+    Fit a linear trend to recent closing prices and extrapolate forward.
+    Returns projected prices at 7, 14, and 30 days, plus trend slope and R².
+
+    Args:
+        ticker: Stock ticker symbol
+        days_back: Number of recent trading days to fit the trend on (default 30)
+    """
+    try:
+        import numpy as np
+
+        stock = yf.Ticker(ticker.upper())
+        hist = stock.history(period="6mo", interval="1d")
+
+        if hist.empty or len(hist) < days_back:
+            return {"error": f"Not enough data — need at least {days_back} trading days."}
+
+        close = hist["Close"].tail(days_back).values
+        x = np.arange(len(close))
+
+        # Linear fit
+        coeffs = np.polyfit(x, close, 1)
+        slope = float(coeffs[0])
+        y_pred = np.polyval(coeffs, x)
+
+        # R² — how well the line fits
+        ss_res = float(np.sum((close - y_pred) ** 2))
+        ss_tot = float(np.sum((close - np.mean(close)) ** 2))
+        r_squared = round(1 - ss_res / ss_tot, 4) if ss_tot > 0 else 0.0
+
+        current_price = float(close[-1])
+        base_idx = len(close) - 1
+
+        forecasts = {
+            "7d": round(float(np.polyval(coeffs, base_idx + 7)), 2),
+            "14d": round(float(np.polyval(coeffs, base_idx + 14)), 2),
+            "30d": round(float(np.polyval(coeffs, base_idx + 30)), 2),
+        }
+
+        return {
+            "ticker": ticker.upper(),
+            "current_price": round(current_price, 2),
+            "trend": "uptrend" if slope > 0 else "downtrend",
+            "daily_slope": round(slope, 4),
+            "r_squared": r_squared,
+            "r_squared_note": "1.0 = perfect fit, <0.5 = low confidence",
+            "forecast": forecasts,
+            "days_used_for_fit": days_back,
+            "note": "Linear extrapolation only. Assumes current trend continues — use alongside other signals.",
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ──────────────────────────────────────────────
+# TOOL 13: ML Direction Classifier
+# ──────────────────────────────────────────────
+@mcp.tool()
+def predict_price_direction(ticker: str) -> dict:
+    """
+    Train a logistic regression on 1 year of technical features to predict
+    whether the stock will close higher or lower tomorrow.
+
+    Features: RSI, MACD histogram, price vs SMA20/SMA50, 5d/10d momentum, volume change.
+    Validated on the last 20 trading days before predicting today.
+    """
+    try:
+        import numpy as np
+        import pandas as pd
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.preprocessing import StandardScaler
+
+        stock = yf.Ticker(ticker.upper())
+        hist = stock.history(period="1y", interval="1d")
+
+        if len(hist) < 80:
+            return {"error": "Need at least 80 days of history to train the model."}
+
+        close = hist["Close"]
+        volume = hist["Volume"]
+
+        # Feature engineering
+        delta = close.diff()
+        gain = delta.where(delta > 0, 0).rolling(14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs))
+
+        ema12 = close.ewm(span=12, adjust=False).mean()
+        ema26 = close.ewm(span=26, adjust=False).mean()
+        macd_hist = (ema12 - ema26) - (ema12 - ema26).ewm(span=9, adjust=False).mean()
+
+        sma20 = close.rolling(20).mean()
+        sma50 = close.rolling(50).mean()
+
+        features = pd.DataFrame({
+            "rsi": rsi,
+            "macd_hist": macd_hist,
+            "price_vs_sma20": close / sma20 - 1,
+            "price_vs_sma50": close / sma50 - 1,
+            "momentum_5d": close.pct_change(5),
+            "momentum_10d": close.pct_change(10),
+            "volume_change": volume.pct_change(5),
+        })
+
+        # Target: did price go up next day?
+        target = (close.shift(-1) > close).astype(int)
+
+        df = features.copy()
+        df["target"] = target
+        df = df.dropna().iloc[:-1]  # drop last row (no next-day label yet)
+
+        if len(df) < 50:
+            return {"error": "Insufficient data after feature engineering."}
+
+        X = df.drop("target", axis=1).values
+        y = df["target"].values
+
+        # Train / validate split — last 20 days as holdout
+        split = len(X) - 20
+        X_train, X_val = X[:split], X[split:]
+        y_train, y_val = y[:split], y[split:]
+
+        scaler = StandardScaler()
+        X_train_s = scaler.fit_transform(X_train)
+        X_val_s = scaler.transform(X_val)
+
+        model = LogisticRegression(max_iter=1000, random_state=42)
+        model.fit(X_train_s, y_train)
+
+        val_accuracy = round(float(model.score(X_val_s, y_val)), 3)
+
+        # Predict using today's features (last row of full features df)
+        today = features.dropna().iloc[-1:].values
+        today_s = scaler.transform(today)
+        probs = model.predict_proba(today_s)[0]
+
+        prob_up = round(float(probs[1]) * 100, 1)
+        prob_down = round(float(probs[0]) * 100, 1)
+        prediction = "up" if prob_up > 50 else "down"
+        confidence = max(prob_up, prob_down)
+
+        return {
+            "ticker": ticker.upper(),
+            "prediction": prediction,
+            "confidence_pct": confidence,
+            "prob_up": prob_up,
+            "prob_down": prob_down,
+            "model_validation_accuracy": val_accuracy,
+            "validation_window": "last 20 trading days",
+            "features": ["rsi", "macd_histogram", "price_vs_sma20", "price_vs_sma50", "momentum_5d", "momentum_10d", "volume_change_5d"],
+            "note": "Logistic regression on technical indicators. Not financial advice.",
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ──────────────────────────────────────────────
 # Run server
 # ──────────────────────────────────────────────
 if __name__ == "__main__":

@@ -16,7 +16,8 @@ RUN uv pip install --no-cache \
     "mcp[cli]>=1.9.0" \
     "yfinance>=0.2.40" \
     "pandas>=2.0.0" \
-    "uvicorn[standard]>=0.30.0"
+    "uvicorn[standard]>=0.30.0" \
+    "scikit-learn>=1.4.0"
 
 # Default port (can be overridden by cloud platform)
 ENV PORT=8000
