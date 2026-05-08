@@ -462,51 +462,58 @@ def search_ticker(query: str) -> dict:
 
 
 # ──────────────────────────────────────────────
-# TOOL 11: Technical Indicator Signals
+# TOOL 11: Technical Indicator Signals (upgraded via ta library)
 # ──────────────────────────────────────────────
 @mcp.tool()
 def get_technical_signals(ticker: str) -> dict:
     """
-    Compute RSI, MACD, and Bollinger Band signals from recent price history.
+    Compute RSI, MACD, Bollinger Bands, ATR, Stochastic, and OBV from recent price history.
     Returns current indicator values and buy/sell/neutral interpretations.
     """
     try:
-        import numpy as np
+        import ta
 
         stock = yf.Ticker(ticker.upper())
         hist = stock.history(period="6mo", interval="1d")
 
-        if hist.empty or len(hist) < 26:
+        if hist.empty or len(hist) < 30:
             return {"error": "Not enough historical data to compute indicators."}
 
         close = hist["Close"]
+        high = hist["High"]
+        low = hist["Low"]
+        volume = hist["Volume"]
+        current_price = float(close.iloc[-1])
 
         # RSI (14-day)
-        delta = close.diff()
-        gain = delta.where(delta > 0, 0).rolling(14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-        rs = gain / loss
-        rsi = 100 - (100 / (1 + rs))
-        rsi_val = round(float(rsi.iloc[-1]), 2)
+        rsi_val = round(float(ta.momentum.RSIIndicator(close=close, window=14).rsi().iloc[-1]), 2)
         rsi_signal = "overbought" if rsi_val > 70 else "oversold" if rsi_val < 30 else "neutral"
 
         # MACD (12, 26, 9)
-        ema12 = close.ewm(span=12, adjust=False).mean()
-        ema26 = close.ewm(span=26, adjust=False).mean()
-        macd_line = ema12 - ema26
-        signal_line = macd_line.ewm(span=9, adjust=False).mean()
-        histogram = macd_line - signal_line
-        macd_direction = "bullish" if float(histogram.iloc[-1]) > 0 else "bearish"
+        macd = ta.trend.MACD(close=close)
+        macd_hist_val = float(macd.macd_diff().iloc[-1])
+        macd_direction = "bullish" if macd_hist_val > 0 else "bearish"
 
         # Bollinger Bands (20-day, 2 std)
-        sma20 = close.rolling(20).mean()
-        std20 = close.rolling(20).std()
-        upper = sma20 + 2 * std20
-        lower = sma20 - 2 * std20
-        current_price = float(close.iloc[-1])
-        bb_range = float(upper.iloc[-1]) - float(lower.iloc[-1])
-        bb_position = (current_price - float(lower.iloc[-1])) / bb_range if bb_range > 0 else 0.5
+        bb = ta.volatility.BollingerBands(close=close, window=20, window_dev=2)
+        bb_upper = float(bb.bollinger_hband().iloc[-1])
+        bb_lower = float(bb.bollinger_lband().iloc[-1])
+        bb_range = bb_upper - bb_lower
+        bb_position = (current_price - bb_lower) / bb_range if bb_range > 0 else 0.5
         bb_signal = "overbought" if bb_position > 0.8 else "oversold" if bb_position < 0.2 else "neutral"
+
+        # ATR — measures volatility in price units
+        atr_val = round(float(ta.volatility.AverageTrueRange(high=high, low=low, close=close).average_true_range().iloc[-1]), 4)
+
+        # Stochastic (14, 3)
+        stoch = ta.momentum.StochasticOscillator(high=high, low=low, close=close)
+        stoch_k = round(float(stoch.stoch().iloc[-1]), 2)
+        stoch_d = round(float(stoch.stoch_signal().iloc[-1]), 2)
+        stoch_signal = "overbought" if stoch_k > 80 else "oversold" if stoch_k < 20 else "neutral"
+
+        # OBV — volume trend confirmation
+        obv_series = ta.volume.OnBalanceVolumeIndicator(close=close, volume=volume).on_balance_volume()
+        obv_trend = "bullish" if float(obv_series.iloc[-1]) > float(obv_series.iloc[-5]) else "bearish"
 
         return {
             "ticker": ticker.upper(),
@@ -517,17 +524,31 @@ def get_technical_signals(ticker: str) -> dict:
                 "interpretation": ">70 overbought, <30 oversold",
             },
             "macd": {
-                "macd_line": round(float(macd_line.iloc[-1]), 4),
-                "signal_line": round(float(signal_line.iloc[-1]), 4),
-                "histogram": round(float(histogram.iloc[-1]), 4),
+                "macd_line": round(float(macd.macd().iloc[-1]), 4),
+                "signal_line": round(float(macd.macd_signal().iloc[-1]), 4),
+                "histogram": round(macd_hist_val, 4),
                 "direction": macd_direction,
             },
             "bollinger_bands": {
-                "upper": round(float(upper.iloc[-1]), 2),
-                "middle": round(float(sma20.iloc[-1]), 2),
-                "lower": round(float(lower.iloc[-1]), 2),
+                "upper": round(bb_upper, 2),
+                "middle": round(float(bb.bollinger_mavg().iloc[-1]), 2),
+                "lower": round(bb_lower, 2),
                 "position_pct": round(bb_position * 100, 1),
                 "signal": bb_signal,
+            },
+            "atr": {
+                "value": atr_val,
+                "interpretation": "Average daily price range — higher = more volatile",
+            },
+            "stochastic": {
+                "k": stoch_k,
+                "d": stoch_d,
+                "signal": stoch_signal,
+                "interpretation": ">80 overbought, <20 oversold",
+            },
+            "obv": {
+                "trend": obv_trend,
+                "interpretation": "Bullish = volume confirming price rise; Bearish = divergence",
             },
         }
     except Exception as e:
@@ -694,6 +715,178 @@ def predict_price_direction(ticker: str) -> dict:
             "validation_window": "last 20 trading days",
             "features": ["rsi", "macd_histogram", "price_vs_sma20", "price_vs_sma50", "momentum_5d", "momentum_10d", "volume_change_5d"],
             "note": "Logistic regression on technical indicators. Not financial advice.",
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ──────────────────────────────────────────────
+# TOOL 14: Market Movers
+# ──────────────────────────────────────────────
+@mcp.tool()
+def get_market_movers(category: str = "gainers") -> dict:
+    """
+    Get today's top market movers from US equities.
+
+    Args:
+        category: 'gainers', 'losers', or 'active' (most active by volume)
+    """
+    try:
+        predefined_map = {
+            "gainers": "day_gainers",
+            "losers": "day_losers",
+            "active": "most_actives",
+        }
+        key = predefined_map.get(category.lower())
+        if not key:
+            return {"error": "category must be 'gainers', 'losers', or 'active'"}
+
+        screener = yf.Screener()
+        screener.set_predefined_body(key)
+        response = screener.response
+        quotes = response.get("quotes", [])
+
+        results = []
+        for q in quotes[:15]:
+            results.append({
+                "ticker": q.get("symbol"),
+                "name": q.get("shortName") or q.get("longName"),
+                "price": q.get("regularMarketPrice"),
+                "change": round(q.get("regularMarketChange", 0), 2),
+                "change_pct": round(q.get("regularMarketChangePercent", 0), 2),
+                "volume": q.get("regularMarketVolume"),
+                "market_cap": q.get("marketCap"),
+            })
+
+        return {"category": category, "movers": results}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ──────────────────────────────────────────────
+# TOOL 15: Sector Performance
+# ──────────────────────────────────────────────
+@mcp.tool()
+def get_sector_performance() -> dict:
+    """
+    Get today's performance across all 11 S&P 500 sectors using SPDR sector ETFs.
+    Shows 1-day, 5-day, and 1-month returns per sector.
+    """
+    try:
+        sector_etfs = {
+            "Technology": "XLK",
+            "Financials": "XLF",
+            "Healthcare": "XLV",
+            "Energy": "XLE",
+            "Industrials": "XLI",
+            "Consumer Discretionary": "XLY",
+            "Consumer Staples": "XLP",
+            "Communication Services": "XLC",
+            "Real Estate": "XLRE",
+            "Utilities": "XLU",
+            "Materials": "XLB",
+        }
+
+        tickers = list(sector_etfs.values())
+        data = yf.download(tickers, period="1mo", interval="1d", progress=False, auto_adjust=True)
+        close = data["Close"]
+
+        results = []
+        for sector, etf in sector_etfs.items():
+            if etf not in close.columns:
+                continue
+            prices = close[etf].dropna()
+            if len(prices) < 2:
+                continue
+
+            day_ret = round((float(prices.iloc[-1]) / float(prices.iloc[-2]) - 1) * 100, 2)
+            week_ret = round((float(prices.iloc[-1]) / float(prices.iloc[-5]) - 1) * 100, 2) if len(prices) >= 5 else None
+            month_ret = round((float(prices.iloc[-1]) / float(prices.iloc[0]) - 1) * 100, 2)
+
+            results.append({
+                "sector": sector,
+                "etf": etf,
+                "price": round(float(prices.iloc[-1]), 2),
+                "return_1d_pct": day_ret,
+                "return_5d_pct": week_ret,
+                "return_1mo_pct": month_ret,
+            })
+
+        results.sort(key=lambda x: x["return_1d_pct"], reverse=True)
+        return {"sectors": results}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ──────────────────────────────────────────────
+# TOOL 16: SEC Filings
+# ──────────────────────────────────────────────
+@mcp.tool()
+def get_sec_filings(ticker: str) -> dict:
+    """
+    Get recent SEC filings for a company — 10-K (annual), 10-Q (quarterly), and 8-K (events).
+    Data sourced from SEC EDGAR via edgartools (free, no API key).
+    """
+    try:
+        from edgar import Company, set_identity
+        set_identity("yfinance-mcp-bot contact@yfinance-mcp.app")
+
+        company = Company(ticker.upper())
+
+        def format_filings(filings, n: int = 5) -> list:
+            out = []
+            for f in (filings.latest(n) if hasattr(filings, "latest") else filings[:n]):
+                out.append({
+                    "form": getattr(f, "form", None),
+                    "filed": str(getattr(f, "filing_date", "") or getattr(f, "date", "")),
+                    "description": getattr(f, "description", None) or getattr(f, "primaryDocument", None),
+                    "url": getattr(f, "filing_index", None) or getattr(f, "url", None),
+                })
+            return out
+
+        annual = format_filings(company.get_filings(form="10-K"), 3)
+        quarterly = format_filings(company.get_filings(form="10-Q"), 4)
+        events = format_filings(company.get_filings(form="8-K"), 5)
+
+        return {
+            "ticker": ticker.upper(),
+            "annual_10k": annual,
+            "quarterly_10q": quarterly,
+            "material_events_8k": events,
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ──────────────────────────────────────────────
+# TOOL 17: Insider Trades (SEC Form 4)
+# ──────────────────────────────────────────────
+@mcp.tool()
+def get_insider_trades(ticker: str) -> dict:
+    """
+    Get recent insider trades (SEC Form 4 filings) — who bought or sold, how much, and when.
+    Data sourced from SEC EDGAR via edgartools (free, no API key).
+    """
+    try:
+        from edgar import Company, set_identity
+        set_identity("yfinance-mcp-bot contact@yfinance-mcp.app")
+
+        company = Company(ticker.upper())
+        filings = company.get_filings(form="4")
+
+        trades = []
+        for f in (filings.latest(15) if hasattr(filings, "latest") else filings[:15]):
+            trades.append({
+                "filed": str(getattr(f, "filing_date", "") or getattr(f, "date", "")),
+                "filer": getattr(f, "entity_name", None) or getattr(f, "filerName", None),
+                "description": getattr(f, "description", None),
+                "url": getattr(f, "filing_index", None) or getattr(f, "url", None),
+            })
+
+        return {
+            "ticker": ticker.upper(),
+            "insider_trades": trades,
+            "source": "SEC EDGAR Form 4",
         }
     except Exception as e:
         return {"error": str(e)}

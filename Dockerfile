@@ -17,7 +17,9 @@ RUN uv pip install --no-cache \
     "yfinance>=0.2.40" \
     "pandas>=2.0.0" \
     "uvicorn[standard]>=0.30.0" \
-    "scikit-learn>=1.4.0"
+    "scikit-learn>=1.4.0" \
+    "ta>=0.11.0" \
+    "edgartools>=3.0.0"
 
 # Default port (can be overridden by cloud platform)
 ENV PORT=8000
