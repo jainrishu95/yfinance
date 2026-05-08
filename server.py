@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 mcp = FastMCP(
     "Yahoo Finance",
     json_response=True,
+    stateless_http=True,
     host="0.0.0.0",
     port=int(os.environ.get("PORT", 8000)),
     transport_security=TransportSecuritySettings(
@@ -464,4 +465,4 @@ def search_ticker(query: str) -> dict:
 # Run server
 # ──────────────────────────────────────────────
 if __name__ == "__main__":
-    mcp.run(transport="sse")
+    mcp.run(transport="streamable-http")
