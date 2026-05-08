@@ -14,7 +14,7 @@ ENV VIRTUAL_ENV=/app/.venv
 ENV PATH="/app/.venv/bin:$PATH"
 RUN uv pip install --no-cache \
     "mcp[cli]>=1.9.0" \
-    "yfinance>=0.2.40" \
+    "yfinance>=0.2.54" \
     "pandas>=2.0.0" \
     "uvicorn[standard]>=0.30.0" \
     "scikit-learn>=1.4.0" \

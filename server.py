@@ -741,7 +741,8 @@ def get_market_movers(category: str = "gainers") -> dict:
         if not key:
             return {"error": "category must be 'gainers', 'losers', or 'active'"}
 
-        screener = yf.Screener()
+        from yfinance import Screener
+        screener = Screener()
         screener.set_predefined_body(key)
         response = screener.response
         quotes = response.get("quotes", [])
@@ -835,13 +836,19 @@ def get_sec_filings(ticker: str) -> dict:
 
         def format_filings(filings, n: int = 5) -> list:
             out = []
-            for f in (filings.latest(n) if hasattr(filings, "latest") else filings[:n]):
-                out.append({
-                    "form": getattr(f, "form", None),
-                    "filed": str(getattr(f, "filing_date", "") or getattr(f, "date", "")),
-                    "description": getattr(f, "description", None) or getattr(f, "primaryDocument", None),
-                    "url": getattr(f, "filing_index", None) or getattr(f, "url", None),
-                })
+            try:
+                result = filings.latest(n) if hasattr(filings, "latest") else filings
+                # edgartools returns a single object when only 1 filing exists
+                items = result if hasattr(result, "__iter__") and not hasattr(result, "accession_no") else [result]
+                for f in list(items)[:n]:
+                    out.append({
+                        "form": getattr(f, "form", None),
+                        "filed": str(getattr(f, "filing_date", "") or getattr(f, "date", "")),
+                        "description": getattr(f, "description", None) or getattr(f, "primaryDocument", None),
+                        "url": getattr(f, "filing_index", None) or getattr(f, "document_url", None) or getattr(f, "url", None),
+                    })
+            except Exception:
+                pass
             return out
 
         annual = format_filings(company.get_filings(form="10-K"), 3)
@@ -875,13 +882,22 @@ def get_insider_trades(ticker: str) -> dict:
         filings = company.get_filings(form="4")
 
         trades = []
-        for f in (filings.latest(15) if hasattr(filings, "latest") else filings[:15]):
-            trades.append({
-                "filed": str(getattr(f, "filing_date", "") or getattr(f, "date", "")),
-                "filer": getattr(f, "entity_name", None) or getattr(f, "filerName", None),
-                "description": getattr(f, "description", None),
-                "url": getattr(f, "filing_index", None) or getattr(f, "url", None),
-            })
+        try:
+            result = filings.latest(15) if hasattr(filings, "latest") else filings
+            items = result if hasattr(result, "__iter__") and not hasattr(result, "accession_no") else [result]
+            for f in list(items)[:15]:
+                trades.append({
+                    "filed": str(getattr(f, "filing_date", "") or getattr(f, "date", "")),
+                    "filer": (getattr(f, "entity_name", None) or
+                              getattr(f, "company_name", None) or
+                              getattr(f, "name", None) or
+                              getattr(f, "filerName", None)),
+                    "form": getattr(f, "form", "4"),
+                    "description": getattr(f, "description", None),
+                    "url": getattr(f, "filing_index", None) or getattr(f, "document_url", None) or getattr(f, "url", None),
+                })
+        except Exception:
+            pass
 
         return {
             "ticker": ticker.upper(),
